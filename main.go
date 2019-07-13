@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"log"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -23,9 +23,9 @@ func isEmptyString(s string) bool {
 }
 
 var (
-	waitInServiceDurationTimeout, preStopTimeout     time.Duration
-	targetID, targetGroupName, postDeregisterCommand string
-	useKube2iam                                      bool
+	waitInServiceDurationTimeout, postDeregisterCommandTimeout time.Duration
+	targetID, targetGroupName, postDeregisterCommand           string
+	useKube2iam                                                bool
 )
 
 func init() {
@@ -33,7 +33,7 @@ func init() {
 	flag.StringVar(&targetID, "target-id", "", "TargetID to register in NLB")
 	flag.StringVar(&targetGroupName, "target-group-name", "", "Target group name to look for")
 	flag.StringVar(&postDeregisterCommand, "post-deregister-command", "", "Command to execute after target is deregistered from target group")
-	flag.DurationVar(&preStopTimeout, "post-deregister-command-timeout", 5*time.Second, "How long to wait for pre-deregister-command to finish")
+	flag.DurationVar(&postDeregisterCommandTimeout, "post-deregister-command-timeout", 5*time.Second, "How long to wait for pre-deregister-command to finish")
 	flag.BoolVar(&useKube2iam, "kube2iam", false, "Whether pod uses kube2iam")
 }
 
@@ -44,8 +44,14 @@ type RegisterTargetInput struct {
 	WaitUntilInServiceTimeout time.Duration
 }
 
+type DeregisterTargetInput struct {
+	ID             *string
+	TargetGroupArn *string
+}
+
 type Registrator interface {
 	RegisterTarget(ctx context.Context, t *RegisterTargetInput) error
+	DeregisterTarget(ctx context.Context, t *DeregisterTargetInput) error
 }
 
 type RegistratorService struct {
@@ -96,6 +102,44 @@ func (r *RegistratorService) RegisterTarget(ctx context.Context, t *RegisterTarg
 	return nil
 }
 
+func (r *RegistratorService) DeregisterTarget(ctx context.Context, t *DeregisterTargetInput) error {
+	klog.Infof("Deregistering %s from %#v", aws.StringValue(t.ID), aws.StringValue(t.TargetGroupArn))
+	_, err := r.ELBClient.DeregisterTargetsWithContext(ctx, &elbv2.DeregisterTargetsInput{
+		TargetGroupArn: t.TargetGroupArn,
+		Targets:        NewTargets(t.ID),
+	})
+	if err != nil {
+		return err
+	}
+	klog.Infof("Target %s is marked as deregistered in target group", aws.StringValue(t.ID))
+	return nil
+}
+
+func (r *RegistratorService) DiscoverTargetGroupArn(targetGroupName string) (string, error) {
+	targetGroups, err := r.ELBClient.DescribeTargetGroups(&elbv2.DescribeTargetGroupsInput{
+		Names: []*string{
+			aws.String(targetGroupName),
+		},
+	})
+
+	if err != nil {
+		return "", err
+	}
+
+	if len(targetGroups.TargetGroups) != 1 {
+		return "", fmt.Errorf("Unexpected count of target groups %d", len(targetGroups.TargetGroups))
+	}
+
+	return aws.StringValue(targetGroups.TargetGroups[0].TargetGroupArn), nil
+}
+
+func ExecPostDeregisterCommand(ctx context.Context, command string) error {
+	klog.Infof("Executing post-deregister command: %s", command)
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
+	combinedOutput, err := cmd.CombinedOutput()
+	klog.Infoln(string(combinedOutput))
+	return err
+}
 func New(elbClient elbv2iface.ELBV2API) *RegistratorService {
 	return &RegistratorService{ELBClient: elbClient}
 }
@@ -103,9 +147,9 @@ func New(elbClient elbv2iface.ELBV2API) *RegistratorService {
 func main() {
 	klog.InitFlags(nil)
 	flag.Parse()
-	sigs := make(chan os.Signal, 1)
 	done := make(chan bool, 1)
 
+	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigs
@@ -124,96 +168,44 @@ func main() {
 
 	registratorService := New(elbClient)
 
-	targetGroups, err := elbClient.DescribeTargetGroups(&elbv2.DescribeTargetGroupsInput{
-		Names: []*string{
-			aws.String(targetGroupName),
-		},
-	})
+	ctx := context.Background()
 
+	regCancelCtx, cancel := context.WithCancel(ctx)
+
+	targetGroupArn, err := registratorService.DiscoverTargetGroupArn(targetGroupName)
 	if err != nil {
 		klog.Fatalln(err)
 	}
 
-	// We expect single target group
-	targetGroupArn := targetGroups.TargetGroups[0].TargetGroupArn
-
-	targetDescription := []*elbv2.TargetDescription{
-		&elbv2.TargetDescription{
-			Id: aws.String(targetID),
-		},
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	err = registratorService.RegisterTarget(ctx, &RegisterTargetInput{
+	err = registratorService.RegisterTarget(regCancelCtx, &RegisterTargetInput{
 		ID:                        aws.String(targetID),
-		TargetGroupArn:            targetGroupArn,
+		TargetGroupArn:            aws.String(targetGroupArn),
 		WaitUntilInService:        aws.Bool(true),
 		WaitUntilInServiceTimeout: waitInServiceDurationTimeout,
 	})
-	// _, err = elbClient.RegisterTargets(&elbv2.RegisterTargetsInput{
-	// 	TargetGroupArn: targetGroupArn,
-	// 	Targets:        targetDescription,
-	// })
 
 	if err != nil {
 		klog.Fatalln(err)
 	}
-
-	// describeTargetHealthInput := &elbv2.DescribeTargetHealthInput{
-	// 	TargetGroupArn: targetGroupArn,
-	// 	Targets:        targetDescription,
-	// }
-
-	// waitRegisterCtx, cancel := context.WithTimeout(context.Background(), waitInServiceDurationTimeout)
-	// defer cancel()
-	// err = elbClient.WaitUntilTargetInServiceWithContext(waitRegisterCtx, describeTargetHealthInput)
-
-	// if err != nil {
-	// 	log.Fatalln(err)
-	// }
-
-	// klog.Infof("Target %s is in service in target group", targetID)
 
 	klog.Infoln("Awaiting signal for deregistration")
 
 	// Block and wait for signal
 	<-done
 
-	// Kubernetes sent signal, deregister target from Load Balancer
-	klog.Infof("Deregistering %s from %#v", targetID, aws.StringValue(targetGroupArn))
-	_, err = elbClient.DeregisterTargets(&elbv2.DeregisterTargetsInput{
-		TargetGroupArn: targetGroupArn,
-		Targets:        targetDescription,
+	err = registratorService.DeregisterTarget(ctx, &DeregisterTargetInput{
+		ID:             aws.String(targetID),
+		TargetGroupArn: aws.String(targetGroupArn),
 	})
 
 	if err != nil {
 		klog.Fatalln(err)
 	}
 
-	ctx, cancel = context.WithTimeout(context.Background(), preStopTimeout)
+	ctx, cancel = context.WithTimeout(ctx, postDeregisterCommandTimeout)
 	defer cancel()
 
 	if postDeregisterCommand != "" {
-		klog.Infof("Executing post-deregister command: %s", postDeregisterCommand)
-		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", postDeregisterCommand)
-		combinedOutput, err := cmd.CombinedOutput()
-		klog.Infoln(string(combinedOutput))
-		if err != nil {
-			log.Fatalln(err)
-		}
+		ExecPostDeregisterCommand(ctx, postDeregisterCommand)
 	}
-
-	klog.Infof("Target %s is marked as deregistered in target group", targetID)
-
-	// I don't know if we should wait for the target to be deregistered to continue ?
-	// Maybe not
-	// waitDeregisterCtx, cancel := context.WithTimeout(context.Background(), time.Minute*10)
-	// defer cancel()
-	// log.Printf("Waiting for %s to be deregistered from target group", targetID)
-	// err = elbClient.WaitUntilTargetDeregisteredWithContext(waitDeregisterCtx, describeTargetHealthInput)
-
-	// if err != nil {
-	// 	log.Fatalln(err)
-	// }
 }
