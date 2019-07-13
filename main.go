@@ -41,7 +41,7 @@ type RegisterTargetInput struct {
 	ID                        *string
 	TargetGroupArn            *string
 	WaitUntilInService        *bool
-	WaitUntilInServiceTimeout *time.Duration
+	WaitUntilInServiceTimeout time.Duration
 }
 
 type Registrator interface {
@@ -66,6 +66,7 @@ func (r *RegistratorService) RegisterTarget(ctx context.Context, t *RegisterTarg
 		return errors.New("RegistratorService.TargetGroupArn is empty, please call DiscoverTargetGroupArn or set it with flag")
 	}
 
+	klog.Infof("Registering %s as target to %#v", aws.StringValue(t.ID), aws.StringValue(t.TargetGroupArn))
 	targets := NewTargets(t.ID)
 	_, err := r.ELBClient.RegisterTargetsWithContext(ctx, &elbv2.RegisterTargetsInput{
 		Targets:        targets,
@@ -76,17 +77,27 @@ func (r *RegistratorService) RegisterTarget(ctx context.Context, t *RegisterTarg
 		return err
 	}
 
-	if !aws.BoolValue(t.WaitUntilInService) {
-		return nil
+	if aws.BoolValue(t.WaitUntilInService) {
+		ctx, cancel := context.WithTimeout(ctx, t.WaitUntilInServiceTimeout)
+		defer cancel()
+
+		klog.Infof("Waiting for %s to be in service in target group", aws.StringValue(t.ID))
+		err = r.ELBClient.WaitUntilTargetInServiceWithContext(ctx, &elbv2.DescribeTargetHealthInput{
+			TargetGroupArn: t.TargetGroupArn,
+			Targets:        targets,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, *t.WaitUntilInServiceTimeout)
-	defer cancel()
+	klog.Infof("Target %#v is registered in target group %#v", aws.StringValue(t.ID), aws.StringValue(t.TargetGroupArn))
 
-	return r.ELBClient.WaitUntilTargetInServiceWithContext(ctx, &elbv2.DescribeTargetHealthInput{
-		TargetGroupArn: t.TargetGroupArn,
-		Targets:        targets,
-	})
+	return nil
+}
+
+func New(elbClient elbv2iface.ELBV2API) *RegistratorService {
+	return &RegistratorService{ELBClient: elbClient}
 }
 
 func main() {
@@ -111,6 +122,8 @@ func main() {
 	var elbClient *elbv2.ELBV2
 	elbClient = elbv2.New(sess)
 
+	registratorService := New(elbClient)
+
 	targetGroups, err := elbClient.DescribeTargetGroups(&elbv2.DescribeTargetGroupsInput{
 		Names: []*string{
 			aws.String(targetGroupName),
@@ -129,31 +142,38 @@ func main() {
 			Id: aws.String(targetID),
 		},
 	}
-	klog.Infof("Registering %s as target to %#v", targetID, aws.StringValue(targetGroupArn))
-	_, err = elbClient.RegisterTargets(&elbv2.RegisterTargetsInput{
-		TargetGroupArn: targetGroupArn,
-		Targets:        targetDescription,
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	err = registratorService.RegisterTarget(ctx, &RegisterTargetInput{
+		ID:                        aws.String(targetID),
+		TargetGroupArn:            targetGroupArn,
+		WaitUntilInService:        aws.Bool(true),
+		WaitUntilInServiceTimeout: waitInServiceDurationTimeout,
 	})
+	// _, err = elbClient.RegisterTargets(&elbv2.RegisterTargetsInput{
+	// 	TargetGroupArn: targetGroupArn,
+	// 	Targets:        targetDescription,
+	// })
 
 	if err != nil {
 		klog.Fatalln(err)
 	}
 
-	describeTargetHealthInput := &elbv2.DescribeTargetHealthInput{
-		TargetGroupArn: targetGroupArn,
-		Targets:        targetDescription,
-	}
+	// describeTargetHealthInput := &elbv2.DescribeTargetHealthInput{
+	// 	TargetGroupArn: targetGroupArn,
+	// 	Targets:        targetDescription,
+	// }
 
-	waitRegisterCtx, cancel := context.WithTimeout(context.Background(), waitInServiceDurationTimeout)
-	defer cancel()
-	klog.Infof("Waiting for %s to be in service in target group", targetID)
-	err = elbClient.WaitUntilTargetInServiceWithContext(waitRegisterCtx, describeTargetHealthInput)
+	// waitRegisterCtx, cancel := context.WithTimeout(context.Background(), waitInServiceDurationTimeout)
+	// defer cancel()
+	// err = elbClient.WaitUntilTargetInServiceWithContext(waitRegisterCtx, describeTargetHealthInput)
 
-	if err != nil {
-		log.Fatalln(err)
-	}
+	// if err != nil {
+	// 	log.Fatalln(err)
+	// }
 
-	klog.Infof("Target %s is in service in target group", targetID)
+	// klog.Infof("Target %s is in service in target group", targetID)
 
 	klog.Infoln("Awaiting signal for deregistration")
 
@@ -171,7 +191,7 @@ func main() {
 		klog.Fatalln(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), preStopTimeout)
+	ctx, cancel = context.WithTimeout(context.Background(), preStopTimeout)
 	defer cancel()
 
 	if postDeregisterCommand != "" {
