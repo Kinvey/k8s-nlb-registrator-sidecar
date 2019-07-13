@@ -1,4 +1,4 @@
-module nlb-registry-sidecar
+module k8s-nlb-registrator-sidecar
 
 go 1.12
 

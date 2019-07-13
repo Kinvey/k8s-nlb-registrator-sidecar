@@ -23,9 +23,9 @@ func isEmptyString(s string) bool {
 }
 
 var (
-	waitInServiceDurationTimeout, postDeregisterCommandTimeout time.Duration
-	targetID, targetGroupName, postDeregisterCommand           string
-	useKube2iam                                                bool
+	waitInServiceDurationTimeout, preRegisterCommandTimeout, postDeregisterCommandTimeout time.Duration
+	targetID, targetGroupName, preRegisterCommand, postDeregisterCommand                  string
+	useKube2iam                                                                           bool
 )
 
 func init() {
@@ -34,6 +34,8 @@ func init() {
 	flag.StringVar(&targetGroupName, "target-group-name", "", "Target group name to look for")
 	flag.StringVar(&postDeregisterCommand, "post-deregister-command", "", "Command to execute after target is deregistered from target group")
 	flag.DurationVar(&postDeregisterCommandTimeout, "post-deregister-command-timeout", 5*time.Second, "How long to wait for pre-deregister-command to finish")
+	flag.StringVar(&preRegisterCommand, "pre-register-command", "", "Command to execute befre target is registered with target group")
+	flag.DurationVar(&preRegisterCommandTimeout, "pre-register-command-timeout", 5*time.Second, "How long to wait for pre-register-command to finish")
 	flag.BoolVar(&useKube2iam, "kube2iam", false, "Whether pod uses kube2iam")
 }
 
@@ -133,13 +135,13 @@ func (r *RegistratorService) DiscoverTargetGroupArn(targetGroupName string) (str
 	return aws.StringValue(targetGroups.TargetGroups[0].TargetGroupArn), nil
 }
 
-func ExecPostDeregisterCommand(ctx context.Context, command string) error {
-	klog.Infof("Executing post-deregister command: %s", command)
+func ExecCommand(ctx context.Context, command string) error {
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
 	combinedOutput, err := cmd.CombinedOutput()
 	klog.Infoln(string(combinedOutput))
 	return err
 }
+
 func New(elbClient elbv2iface.ELBV2API) *RegistratorService {
 	return &RegistratorService{ELBClient: elbClient}
 }
@@ -177,6 +179,11 @@ func main() {
 		klog.Fatalln(err)
 	}
 
+	if preRegisterCommand != "" {
+		klog.Infof("Executing pre-register command: %s", preRegisterCommand)
+		ExecCommand(ctx, preRegisterCommand)
+	}
+
 	err = registratorService.RegisterTarget(regCancelCtx, &RegisterTargetInput{
 		ID:                        aws.String(targetID),
 		TargetGroupArn:            aws.String(targetGroupArn),
@@ -206,6 +213,7 @@ func main() {
 	defer cancel()
 
 	if postDeregisterCommand != "" {
-		ExecPostDeregisterCommand(ctx, postDeregisterCommand)
+		klog.Infof("Executing post-deregister command: %s", postDeregisterCommand)
+		ExecCommand(ctx, postDeregisterCommand)
 	}
 }
