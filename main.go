@@ -170,11 +170,6 @@ func main() {
 		klog.Fatalln(err)
 	}
 
-	if preRegisterCommand != "" {
-		klog.Infof("Executing pre-register command: %s", preRegisterCommand)
-		ExecCommand(ctx, preRegisterCommand)
-	}
-
 	done := make(chan bool, 1)
 
 	sigs := make(chan os.Signal, 1)
@@ -187,6 +182,11 @@ func main() {
 	}()
 
 	go func() {
+		if preRegisterCommand != "" {
+			klog.Infof("Executing pre-register command: %s", preRegisterCommand)
+			ExecCommand(ctx, preRegisterCommand)
+		}
+
 		err = registratorService.RegisterTarget(regCancelCtx, &RegisterTargetInput{
 			ID:                        aws.String(targetID),
 			TargetGroupArn:            aws.String(targetGroupArn),
