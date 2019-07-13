@@ -149,15 +149,6 @@ func New(elbClient elbv2iface.ELBV2API) *RegistratorService {
 func main() {
 	klog.InitFlags(nil)
 	flag.Parse()
-	done := make(chan bool, 1)
-
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigs
-		klog.Infof("Received %s", sig)
-		done <- true
-	}()
 
 	if useKube2iam {
 		klog.Infoln("Give some time for kube2iam to setup temporary security credentials. (Sleeping for 10 seconds)")
@@ -172,7 +163,7 @@ func main() {
 
 	ctx := context.Background()
 
-	regCancelCtx, cancel := context.WithCancel(ctx)
+	regCancelCtx, regCancelFunc := context.WithCancel(ctx)
 
 	targetGroupArn, err := registratorService.DiscoverTargetGroupArn(targetGroupName)
 	if err != nil {
@@ -184,16 +175,29 @@ func main() {
 		ExecCommand(ctx, preRegisterCommand)
 	}
 
-	err = registratorService.RegisterTarget(regCancelCtx, &RegisterTargetInput{
-		ID:                        aws.String(targetID),
-		TargetGroupArn:            aws.String(targetGroupArn),
-		WaitUntilInService:        aws.Bool(true),
-		WaitUntilInServiceTimeout: waitInServiceDurationTimeout,
-	})
+	done := make(chan bool, 1)
 
-	if err != nil {
-		klog.Fatalln(err)
-	}
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigs
+		klog.Infof("Received %s", sig)
+		defer regCancelFunc()
+		done <- true
+	}()
+
+	go func() {
+		err = registratorService.RegisterTarget(regCancelCtx, &RegisterTargetInput{
+			ID:                        aws.String(targetID),
+			TargetGroupArn:            aws.String(targetGroupArn),
+			WaitUntilInService:        aws.Bool(true),
+			WaitUntilInServiceTimeout: waitInServiceDurationTimeout,
+		})
+
+		if err != nil {
+			klog.Error(err)
+		}
+	}()
 
 	klog.Infoln("Awaiting signal for deregistration")
 
@@ -209,7 +213,7 @@ func main() {
 		klog.Fatalln(err)
 	}
 
-	ctx, cancel = context.WithTimeout(ctx, postDeregisterCommandTimeout)
+	ctx, cancel := context.WithTimeout(ctx, postDeregisterCommandTimeout)
 	defer cancel()
 
 	if postDeregisterCommand != "" {
