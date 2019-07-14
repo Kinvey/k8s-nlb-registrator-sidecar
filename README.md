@@ -35,18 +35,18 @@ Usage of ./k8s-nlb-registrator-sidecar:
 * If you don't care for container native load-balancing you can achieve similar results with the Kubernetes Service Object.
 
 ## Motivation
-• Enable IAC automation of NLBs used with Kubernetes - It turns out that it is really hard to automate creation of VPC PrivateLink connection if the NLB was created using Kubernetes Service Object
-• Get rid of the bash scripts used in `preStop` and `postStart` Kubernetes lifecycle hooks, because ... bash
-• Achieve something like https://cloud.google.com/blog/products/containers-kubernetes/introducing-container-native-load-balancing-on-google-kubernetes-engine for TCP services in Amazon
+* Enable IAC automation of NLBs used with Kubernetes - It turns out that it is really hard to automate creation of VPC PrivateLink connection if the NLB was created using Kubernetes Service Object
+* Get rid of the bash scripts used in `preStop` and `postStart` Kubernetes lifecycle hooks, because ... bash
+* Achieve something like https://cloud.google.com/blog/products/containers-kubernetes/introducing-container-native-load-balancing-on-google-kubernetes-engine for TCP services in Amazon
 
 ## Use cases
-• Register TCP services in NLB with Target Type IP (Example: Running centralised Kafka broker and exposing it in multiple accounts using AWS PrivateLink - https://www.slideshare.net/ConfluentInc/connecting-kafka-across-multiple-aws-vpcs)
-• Register your Edge proxy directly in NLB - useful for regulated environments where in-transit data encryption is mandatory
+* Register TCP services in NLB with Target Type IP (Example: Running centralised Kafka broker and exposing it in multiple accounts using AWS PrivateLink - https://www.slideshare.net/ConfluentInc/connecting-kafka-across-multiple-aws-vpcs)
+* Register your Edge proxy directly in NLB - useful for regulated environments where in-transit data encryption is mandatory
 
 ## How it works
 1. When a pod starts the program will:
- * Gather it's IP from Kubernetes Downward API
- * Discover target group arn by performing the `elbv2:DescribeTargetGroups` with a filter - target group name (Downward API can be used here as well)
+  * Gather it's IP from Kubernetes Downward API
+  * Discover target group arn by performing the `elbv2:DescribeTargetGroups` with a filter - target group name (Downward API can be used here as well)
 2.  Perform `elbv2:RegisterTargets` action to a named target group using the ip as TargetID.
 3. (Optional) Wait for the target to become healthy by invoking the `WaitUntilTargetInServiceWithContext` Go SDK method (under the hood it polls `elbv2:DescribeTargetHealth`
 4. Block and wait for process signal - SIGINT or  SIGTERM
@@ -57,14 +57,14 @@ Optionally, invoke command after `elbv2:DeregisterTargets` to notify other Conta
 
 ## Current functionality
 
-• Registering a pod in Target Group with type IP
-• Wait until a target is Healthy in Target Group
-• Deregister a target in Target Group
-• Invoke command before registration and after deregistration
+* Registering a pod in Target Group with type IP
+* Wait until a target is Healthy in Target Group
+* Deregister a target in Target Group
+* Invoke command before registration and after deregistration
 
 ## TODO
 
-• Docs
-• Some Integration Tests
-• CI Pipeline
-• Refactor to follow design principles and patterns
+* Docs
+* Some Integration Tests
+* CI Pipeline
+* Refactor to follow design principles and patterns
