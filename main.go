@@ -50,18 +50,94 @@ type App struct {
 	PostDeregister       *PostDeregisterHook
 }
 
-// func init() {
-// 	flag.BoolVar(&app.WaitInService, "wait-in-service", true, "Whether to wait for NLB target to become healthy")
-// 	flag.DurationVar(&app.WaitInServiceTimeout, "wait-in-service-timeout", 5*time.Minute, "How long to wait for NLB target to become healthy")
-// 	flag.StringVar(&app.TargetID, "target-id", "", "TargetID to register in NLB")
-// 	flag.StringVar(&app.TargetGroupName, "target-group-name", "", "Target group name to look for")
-// 	flag.StringVar(&app.PostDeregister.Command, "post-deregister-command", "", "Command to execute after target is deregistered from target group")
-// 	flag.DurationVar(&app.PostDeregister.Timeout, "post-deregister-command-timeout", 5*time.Second, "How long to wait for pre-deregister-command to finish")
-// 	flag.StringVar(&app.PreRegister.Command, "pre-register-command", "", "Command to execute befre target is registered with target group")
-// 	flag.DurationVar(&app.PreRegister.Timeout, "pre-register-command-timeout", 5*time.Second, "How long to wait for pre-register-command to finish")
-// }
+func main() {
 
-func RegisterTarget(ctx context.Context, app *App, registratorService *RegistratorService, logger log.Logger) {
+	logger := setupLogger()
+
+	if err := parseFlags(); err != nil {
+		level.Error(logger).Log("error", err)
+		os.Exit(1)
+	}
+
+	// Graceful shutdown
+	stop := signals.SetupSignalHandler()
+
+	// Setup dependencies
+	svc := setupELBService(logger)
+	registratorService := New(svc, logger)
+	// Program will stop here if we can't discover target group arn
+	app.TargetGroupArn = discoverTargetGroupArn(app, registratorService, logger)
+
+	ctx := context.Background()
+	regCancelCtx, regCancelFunc := context.WithCancel(ctx)
+	// Passing cancellable context in case app.WaitInService is true and we
+	// intentionally sent SIGINT/SIGTERM to the program.
+	// It doesn't make sense to wait for target to be in service when we actually
+	// want to deregister it from target group
+	go registerTarget(regCancelCtx, app, registratorService, logger)
+
+	// Block and wait for signal
+	logger.Log("msg", "Awaiting signal for deregistration")
+	<-stop
+	// Cancel Register Target operation if case it's running
+	regCancelFunc()
+
+	// Deregister Target in Target Group
+	deregisterTarget(ctx, app, registratorService, logger)
+}
+
+func setupLogger() log.Logger {
+	logger := log.NewLogfmtLogger(log.NewSyncWriter(os.Stderr))
+	logger = log.With(logger, "time", log.DefaultTimestampUTC, "caller", log.DefaultCaller)
+	return logger
+}
+
+func parseFlags() error {
+	fs, err := gflag.Parse(app)
+	if err != nil {
+		return err
+	}
+
+	err = fs.Parse(os.Args[1:])
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func setupELBService(logger log.Logger) *elbv2.ELBV2 {
+	var sess *session.Session
+	sessionRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
+	err := sessionRetrier.Run(func() error {
+		var err error
+		sess, err = session.NewSession()
+		return err
+	})
+
+	if err != nil {
+		level.Error(logger).Log("error", err)
+		os.Exit(1)
+	}
+	return elbv2.New(sess)
+}
+
+func discoverTargetGroupArn(app *App, registratorService *RegistratorService, logger log.Logger) string {
+	var targetGroupArn string
+	discoverTargetGroupArnRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
+	err := discoverTargetGroupArnRetrier.Run(func() error {
+		var err error
+		targetGroupArn, err = registratorService.DiscoverTargetGroupArn(app.TargetGroupName)
+		return err
+	})
+	if err != nil {
+		logger.Log("error", err)
+		os.Exit(1)
+	}
+
+	return targetGroupArn
+}
+
+func registerTarget(ctx context.Context, app *App, registratorService *RegistratorService, logger log.Logger) {
 	if app.PreRegister.Command != "" {
 		preRegCtx, preRegCancelFn := context.WithTimeout(ctx, app.PreRegister.Timeout)
 		defer preRegCancelFn()
@@ -84,7 +160,7 @@ func RegisterTarget(ctx context.Context, app *App, registratorService *Registrat
 	}
 }
 
-func DeregisterTarget(ctx context.Context, app *App, registratorService *RegistratorService, logger log.Logger) {
+func deregisterTarget(ctx context.Context, app *App, registratorService *RegistratorService, logger log.Logger) {
 	deregisterRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
 	err := deregisterRetrier.RunCtx(ctx, func(context.Context) error {
 		return registratorService.DeregisterTarget(ctx, &DeregisterTargetInput{
@@ -104,86 +180,4 @@ func DeregisterTarget(ctx context.Context, app *App, registratorService *Registr
 		logger.Log("msg", "Executing post-deregister command", "command", app.PostDeregister.Command)
 		ExecCommand(ctx, logger, app.PostDeregister.Command)
 	}
-}
-
-func DiscoverTargetGroupArn(app *App, registratorService *RegistratorService, logger log.Logger) string {
-	var targetGroupArn string
-	discoverTargetGroupArnRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
-	err := discoverTargetGroupArnRetrier.Run(func() error {
-		var err error
-		targetGroupArn, err = registratorService.DiscoverTargetGroupArn(app.TargetGroupName)
-		return err
-	})
-	if err != nil {
-		logger.Log("error", err)
-		os.Exit(1)
-	}
-
-	return targetGroupArn
-}
-
-func SetupLogger() log.Logger {
-	logger := log.NewLogfmtLogger(log.NewSyncWriter(os.Stderr))
-	logger = log.With(logger, "time", log.DefaultTimestampUTC, "caller", log.DefaultCaller)
-	return logger
-}
-
-func ParseFlags() error {
-	fs, err := gflag.Parse(app)
-	if err != nil {
-		return err
-	}
-
-	err = fs.Parse(os.Args[1:])
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func SetupELBService(logger log.Logger) *elbv2.ELBV2 {
-	var sess *session.Session
-	sessionRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
-	err := sessionRetrier.Run(func() error {
-		var err error
-		sess, err = session.NewSession()
-		return err
-	})
-
-	if err != nil {
-		level.Error(logger).Log("error", err)
-		os.Exit(1)
-	}
-	return elbv2.New(sess)
-}
-
-func main() {
-
-	logger := SetupLogger()
-
-	if err := ParseFlags(); err != nil {
-		level.Error(logger).Log("error", err)
-	}
-
-	ctx := context.Background()
-	// Setup graceful shutdown
-	done := signals.SetupSignalHandler()
-
-	// Setup dependencies
-	svc := SetupELBService(logger)
-	registratorService := New(svc, logger)
-	// Discover TargetGroupArn
-	app.TargetGroupArn = DiscoverTargetGroupArn(app, registratorService, logger)
-
-	// Register Target in Target Group
-	regCancelCtx, regCancelFunc := context.WithCancel(ctx)
-	go RegisterTarget(regCancelCtx, app, registratorService, logger)
-
-	logger.Log("msg", "Awaiting signal for deregistration")
-
-	// Block and wait for signal
-	<-done
-	regCancelFunc()
-
-	DeregisterTarget(ctx, app, registratorService, logger)
 }
