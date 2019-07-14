@@ -56,12 +56,14 @@ When Kubernetes decides to delete the pod for some reason (rolling update, node 
 Optionally, invoke command after `elbv2:DeregisterTargets` to notify other Container in the Pod that it is safe to stop receiving traffic.
 
 ## Current functionality
+
 • Registering a pod in Target Group with type IP
 • Wait until a target is Healthy in Target Group
 • Deregister a target in Target Group
 • Invoke command before registration and after deregistration
 
 ## TODO
+
 • Docs
 • Some Integration Tests
 • CI Pipeline
