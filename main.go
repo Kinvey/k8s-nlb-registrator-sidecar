@@ -52,7 +52,7 @@ func main() {
 	var sess *session.Session
 
 	// Setup dependencies
-	sessionRetrier := retrier.New(retrier.ConstantBackoff(3, 1*time.Second), nil)
+	sessionRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
 	err := sessionRetrier.Run(func() error {
 		session, err := session.NewSession()
 		sess = session
@@ -87,7 +87,7 @@ func main() {
 			ExecCommand(ctx, logger, preRegisterCommand)
 		}
 
-		registerRetrier := retrier.New(retrier.ExponentialBackoff(3, 100*time.Millisecond), nil)
+		registerRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
 		err = registerRetrier.RunCtx(regCancelCtx, func(ctx context.Context) error {
 			return registratorService.RegisterTarget(ctx, &RegisterTargetInput{
 				ID:                        aws.String(targetID),
@@ -108,7 +108,7 @@ func main() {
 	<-done
 	regCancelFunc()
 
-	deregisterRetrier := retrier.New(retrier.ExponentialBackoff(3, 100*time.Millisecond), nil)
+	deregisterRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
 	err = deregisterRetrier.RunCtx(ctx, func(context.Context) error {
 		return registratorService.DeregisterTarget(ctx, &DeregisterTargetInput{
 			ID:             aws.String(targetID),
