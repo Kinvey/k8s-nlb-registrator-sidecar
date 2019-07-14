@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/eapache/go-resiliency/retrier"
 	"github.com/go-kit/kit/log"
 	"sigs.k8s.io/controller-runtime/pkg/runtime/signals"
 )
@@ -48,12 +49,30 @@ func main() {
 	// Setup graceful shutdown
 	done := signals.SetupSignalHandler()
 
+	var sess *session.Session
+
 	// Setup dependencies
-	sess := session.Must(session.NewSession())
+	sessionRetrier := retrier.New(retrier.ConstantBackoff(3, 1*time.Second), nil)
+	err := sessionRetrier.Run(func() error {
+		session, err := session.NewSession()
+		sess = session
+		return err
+	})
+
+	if err != nil {
+		logger.Log("error", err)
+	}
+
 	svc := elbv2.New(sess)
 	registratorService := New(svc, logger)
 
-	targetGroupArn, err := registratorService.DiscoverTargetGroupArn(targetGroupName)
+	var targetGroupArn string
+	discoverTargetGroupArnRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
+	err = discoverTargetGroupArnRetrier.Run(func() error {
+		tgArn, err := registratorService.DiscoverTargetGroupArn(targetGroupName)
+		targetGroupArn = tgArn
+		return err
+	})
 
 	if err != nil {
 		logger.Log("error", err)
@@ -68,11 +87,14 @@ func main() {
 			ExecCommand(ctx, logger, preRegisterCommand)
 		}
 
-		err = registratorService.RegisterTarget(regCancelCtx, &RegisterTargetInput{
-			ID:                        aws.String(targetID),
-			TargetGroupArn:            aws.String(targetGroupArn),
-			WaitUntilInService:        aws.Bool(waitInService),
-			WaitUntilInServiceTimeout: waitInServiceDurationTimeout,
+		registerRetrier := retrier.New(retrier.ExponentialBackoff(3, 100*time.Millisecond), nil)
+		err = registerRetrier.RunCtx(regCancelCtx, func(ctx context.Context) error {
+			return registratorService.RegisterTarget(ctx, &RegisterTargetInput{
+				ID:                        aws.String(targetID),
+				TargetGroupArn:            aws.String(targetGroupArn),
+				WaitUntilInService:        aws.Bool(waitInService),
+				WaitUntilInServiceTimeout: waitInServiceDurationTimeout,
+			})
 		})
 
 		if err != nil {
@@ -86,9 +108,12 @@ func main() {
 	<-done
 	regCancelFunc()
 
-	err = registratorService.DeregisterTarget(ctx, &DeregisterTargetInput{
-		ID:             aws.String(targetID),
-		TargetGroupArn: aws.String(targetGroupArn),
+	deregisterRetrier := retrier.New(retrier.ExponentialBackoff(3, 100*time.Millisecond), nil)
+	err = deregisterRetrier.RunCtx(ctx, func(context.Context) error {
+		return registratorService.DeregisterTarget(ctx, &DeregisterTargetInput{
+			ID:             aws.String(targetID),
+			TargetGroupArn: aws.String(targetGroupArn),
+		})
 	})
 
 	if err != nil {
