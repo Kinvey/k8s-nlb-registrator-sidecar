@@ -15,21 +15,35 @@ import (
 )
 
 var (
-	waitInServiceDurationTimeout, preRegisterCommandTimeout, postDeregisterCommandTimeout time.Duration
-	targetID, targetGroupName, preRegisterCommand, postDeregisterCommand                  string
-	waitInService, useKube2iam                                                            bool
+	app *App = &App{
+		PreRegister:    &Hook{},
+		PostDeregister: &Hook{},
+	}
 )
 
+type Hook struct {
+	Command string
+	Timeout time.Duration
+}
+
+type App struct {
+	WaitInService        bool
+	WaitInServiceTimeout time.Duration
+	TargetID             string
+	TargetGroupName      string
+	PreRegister          *Hook
+	PostDeregister       *Hook
+}
+
 func init() {
-	flag.BoolVar(&waitInService, "wait-in-service", true, "Whether to wait for NLB target to become healthy")
-	flag.DurationVar(&waitInServiceDurationTimeout, "wait-in-service-timeout", 5*time.Minute, "How long to wait for NLB target to become healthy")
-	flag.StringVar(&targetID, "target-id", "", "TargetID to register in NLB")
-	flag.StringVar(&targetGroupName, "target-group-name", "", "Target group name to look for")
-	flag.StringVar(&postDeregisterCommand, "post-deregister-command", "", "Command to execute after target is deregistered from target group")
-	flag.DurationVar(&postDeregisterCommandTimeout, "post-deregister-command-timeout", 5*time.Second, "How long to wait for pre-deregister-command to finish")
-	flag.StringVar(&preRegisterCommand, "pre-register-command", "", "Command to execute befre target is registered with target group")
-	flag.DurationVar(&preRegisterCommandTimeout, "pre-register-command-timeout", 5*time.Second, "How long to wait for pre-register-command to finish")
-	flag.BoolVar(&useKube2iam, "kube2iam", false, "Whether pod uses kube2iam")
+	flag.BoolVar(&app.WaitInService, "wait-in-service", true, "Whether to wait for NLB target to become healthy")
+	flag.DurationVar(&app.WaitInServiceTimeout, "wait-in-service-timeout", 5*time.Minute, "How long to wait for NLB target to become healthy")
+	flag.StringVar(&app.TargetID, "target-id", "", "TargetID to register in NLB")
+	flag.StringVar(&app.TargetGroupName, "target-group-name", "", "Target group name to look for")
+	flag.StringVar(&app.PostDeregister.Command, "post-deregister-command", "", "Command to execute after target is deregistered from target group")
+	flag.DurationVar(&app.PostDeregister.Timeout, "post-deregister-command-timeout", 5*time.Second, "How long to wait for pre-deregister-command to finish")
+	flag.StringVar(&app.PreRegister.Command, "pre-register-command", "", "Command to execute befre target is registered with target group")
+	flag.DurationVar(&app.PreRegister.Timeout, "pre-register-command-timeout", 5*time.Second, "How long to wait for pre-register-command to finish")
 }
 
 func main() {
@@ -39,11 +53,6 @@ func main() {
 	var logger log.Logger
 	logger = log.NewLogfmtLogger(log.NewSyncWriter(os.Stderr))
 	logger = log.With(logger, "time", log.DefaultTimestampUTC, "caller", log.DefaultCaller)
-
-	if useKube2iam {
-		logger.Log("msg", "Give some time for kube2iam to setup temporary security credentials. (Sleeping for 10 seconds)")
-		time.Sleep(time.Second * 10)
-	}
 
 	ctx := context.Background()
 	// Setup graceful shutdown
@@ -70,7 +79,7 @@ func main() {
 	discoverTargetGroupArnRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
 	err = discoverTargetGroupArnRetrier.Run(func() error {
 		var err error
-		targetGroupArn, err = registratorService.DiscoverTargetGroupArn(targetGroupName)
+		targetGroupArn, err = registratorService.DiscoverTargetGroupArn(app.TargetGroupName)
 		return err
 	})
 
@@ -82,18 +91,20 @@ func main() {
 	regCancelCtx, regCancelFunc := context.WithCancel(ctx)
 
 	go func() {
-		if preRegisterCommand != "" {
-			logger.Log("msg", "Executing pre-register command", "command", preRegisterCommand)
-			ExecCommand(ctx, logger, preRegisterCommand)
+		if app.PreRegister.Command != "" {
+			preRegCtx, preRegCancelFn := context.WithTimeout(regCancelCtx, app.PreRegister.Timeout)
+			defer preRegCancelFn()
+			logger.Log("msg", "Executing pre-register command", "command", app.PreRegister.Command)
+			ExecCommand(preRegCtx, logger, app.PreRegister.Command)
 		}
 
 		registerRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
 		err = registerRetrier.RunCtx(regCancelCtx, func(ctx context.Context) error {
 			return registratorService.RegisterTarget(ctx, &RegisterTargetInput{
-				ID:                        aws.String(targetID),
+				ID:                        aws.String(app.TargetID),
 				TargetGroupArn:            aws.String(targetGroupArn),
-				WaitUntilInService:        aws.Bool(waitInService),
-				WaitUntilInServiceTimeout: waitInServiceDurationTimeout,
+				WaitUntilInService:        aws.Bool(app.WaitInService),
+				WaitUntilInServiceTimeout: app.WaitInServiceTimeout,
 			})
 		})
 
@@ -111,7 +122,7 @@ func main() {
 	deregisterRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
 	err = deregisterRetrier.RunCtx(ctx, func(context.Context) error {
 		return registratorService.DeregisterTarget(ctx, &DeregisterTargetInput{
-			ID:             aws.String(targetID),
+			ID:             aws.String(app.TargetID),
 			TargetGroupArn: aws.String(targetGroupArn),
 		})
 	})
@@ -120,11 +131,11 @@ func main() {
 		logger.Log("error", err)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, postDeregisterCommandTimeout)
+	ctx, cancel := context.WithTimeout(ctx, app.PostDeregister.Timeout)
 	defer cancel()
 
-	if postDeregisterCommand != "" {
-		logger.Log("msg", "Executing post-deregister command", "command", postDeregisterCommand)
-		ExecCommand(ctx, logger, postDeregisterCommand)
+	if app.PostDeregister.Command != "" {
+		logger.Log("msg", "Executing post-deregister command", "command", app.PostDeregister.Command)
+		ExecCommand(ctx, logger, app.PostDeregister.Command)
 	}
 }
