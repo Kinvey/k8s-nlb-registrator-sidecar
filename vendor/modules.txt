@@ -35,11 +35,15 @@ github.com/aws/aws-sdk-go/private/protocol/json/jsonutil
 github.com/eapache/go-resiliency/retrier
 # github.com/go-kit/kit v0.9.0
 github.com/go-kit/kit/log
+github.com/go-kit/kit/log/level
 # github.com/go-logfmt/logfmt v0.4.0
 github.com/go-logfmt/logfmt
 # github.com/jmespath/go-jmespath v0.0.0-20180206201540-c2b33e8439af
 github.com/jmespath/go-jmespath
 # github.com/kr/logfmt v0.0.0-20140226030751-b84e30acd515
 github.com/kr/logfmt
+# github.com/octago/sflags v0.2.0
+github.com/octago/sflags/gen/gflag
+github.com/octago/sflags
 # sigs.k8s.io/controller-runtime v0.1.12
 sigs.k8s.io/controller-runtime/pkg/runtime/signals
