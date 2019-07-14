@@ -48,7 +48,7 @@ func (r *RegistratorService) RegisterTarget(ctx context.Context, t *RegisterTarg
 		return errors.New("RegistratorService.TargetGroupArn is empty, please call DiscoverTargetGroupArn or set it with flag")
 	}
 
-	r.Logger.Log("msg", "Registering target in target group", "target_id", aws.StringValue(t.ID), "target_group_arn", aws.StringValue(t.TargetGroupArn))
+	r.Logger.Log("msg", "Registering target in target group")
 	targets := NewTargets(t.ID)
 	_, err := r.ELBClient.RegisterTargetsWithContext(ctx, &elbv2.RegisterTargetsInput{
 		Targets:        targets,
@@ -63,7 +63,7 @@ func (r *RegistratorService) RegisterTarget(ctx context.Context, t *RegisterTarg
 		ctx, cancel := context.WithTimeout(ctx, t.WaitUntilInServiceTimeout)
 		defer cancel()
 
-		r.Logger.Log("msg", "Waiting for target to be in service in target group", "target_id", aws.StringValue(t.ID))
+		r.Logger.Log("msg", "Waiting for target to be in service in target group")
 		err = r.ELBClient.WaitUntilTargetInServiceWithContext(ctx, &elbv2.DescribeTargetHealthInput{
 			TargetGroupArn: t.TargetGroupArn,
 			Targets:        targets,
@@ -73,13 +73,13 @@ func (r *RegistratorService) RegisterTarget(ctx context.Context, t *RegisterTarg
 		}
 	}
 
-	r.Logger.Log("msg", "Target is registered in target group", "target_id", aws.StringValue(t.ID), "target_group_arn", aws.StringValue(t.TargetGroupArn))
+	r.Logger.Log("msg", "Target is registered in target group")
 
 	return nil
 }
 
 func (r *RegistratorService) DeregisterTarget(ctx context.Context, t *DeregisterTargetInput) error {
-	r.Logger.Log("msg", "Deregistering target from target group", "target_id", aws.StringValue(t.ID), "target_group_arn", aws.StringValue(t.TargetGroupArn))
+	r.Logger.Log("msg", "Deregistering target from target group")
 	_, err := r.ELBClient.DeregisterTargetsWithContext(ctx, &elbv2.DeregisterTargetsInput{
 		TargetGroupArn: t.TargetGroupArn,
 		Targets:        NewTargets(t.ID),
@@ -87,7 +87,7 @@ func (r *RegistratorService) DeregisterTarget(ctx context.Context, t *Deregister
 	if err != nil {
 		return err
 	}
-	r.Logger.Log("msg", "Target is marked as deregistered in target group", "target_id", aws.StringValue(t.ID), "target_group_arn", aws.StringValue(t.TargetGroupArn))
+	r.Logger.Log("msg", "Target is marked as deregistered in target group")
 	return nil
 }
 

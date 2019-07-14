@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"k8s-nlb-registrator-sidecar/constants"
 	"os"
 	"time"
 
@@ -59,14 +60,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	logger = log.With(logger, constants.TargetID, app.TargetID)
+
 	// Graceful shutdown
 	stop := signals.SetupSignalHandler()
 
 	// Setup dependencies
 	svc := setupELBService(logger)
 	registratorService := New(svc, logger)
-	// Program will stop here if we can't discover target group arn
-	app.TargetGroupArn = discoverTargetGroupArn(app, registratorService, logger)
+
+	var err error
+	app.TargetGroupArn, err = discoverTargetGroupArn(app, registratorService)
+	logger = log.With(logger, constants.TargetGroupArn, app.TargetGroupArn)
+
+	// TODO: Fix log context propagation
+	registratorService.Logger = logger
+
+	if err != nil {
+		logger.Log("error", err)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 	regCancelCtx, regCancelFunc := context.WithCancel(ctx)
@@ -121,7 +134,7 @@ func setupELBService(logger log.Logger) *elbv2.ELBV2 {
 	return elbv2.New(sess)
 }
 
-func discoverTargetGroupArn(app *App, registratorService *RegistratorService, logger log.Logger) string {
+func discoverTargetGroupArn(app *App, registratorService *RegistratorService) (string, error) {
 	var targetGroupArn string
 	discoverTargetGroupArnRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
 	err := discoverTargetGroupArnRetrier.Run(func() error {
@@ -130,11 +143,10 @@ func discoverTargetGroupArn(app *App, registratorService *RegistratorService, lo
 		return err
 	})
 	if err != nil {
-		logger.Log("error", err)
-		os.Exit(1)
+		return "", err
 	}
 
-	return targetGroupArn
+	return targetGroupArn, nil
 }
 
 func registerTarget(ctx context.Context, app *App, registratorService *RegistratorService, logger log.Logger) {
