@@ -54,8 +54,8 @@ func main() {
 	// Setup dependencies
 	sessionRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
 	err := sessionRetrier.Run(func() error {
-		session, err := session.NewSession()
-		sess = session
+		var err error
+		sess, err = session.NewSession()
 		return err
 	})
 
@@ -69,8 +69,8 @@ func main() {
 	var targetGroupArn string
 	discoverTargetGroupArnRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
 	err = discoverTargetGroupArnRetrier.Run(func() error {
-		tgArn, err := registratorService.DiscoverTargetGroupArn(targetGroupName)
-		targetGroupArn = tgArn
+		var err error
+		targetGroupArn, err = registratorService.DiscoverTargetGroupArn(targetGroupName)
 		return err
 	})
 
