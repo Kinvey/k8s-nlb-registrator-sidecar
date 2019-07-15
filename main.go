@@ -28,6 +28,10 @@ var (
 			Command: "",
 			Timeout: 5 * time.Second,
 		},
+		PostRegister: &PostRegisterHook{
+			Command: "",
+			Timeout: 5 * time.Second,
+		},
 	}
 )
 
@@ -41,6 +45,11 @@ type PostDeregisterHook struct {
 	Timeout time.Duration `desc:"How long to wait for post-deregister command to execute"`
 }
 
+type PostRegisterHook struct {
+	Command string        `desc:"Command to execute after target is registered"`
+	Timeout time.Duration `desc:"How long to wait for post-register command to execute"`
+}
+
 type App struct {
 	WaitInService        bool          `desc:"Whether to wait for target group to become healthy"`
 	WaitInServiceTimeout time.Duration `desc:"How long to wait for target group to become healthy"`
@@ -48,6 +57,7 @@ type App struct {
 	TargetGroupName      string        `desc:"Which target group to use for registering and deregistering targets"`
 	TargetGroupArn       string        `flag:"-"`
 	PreRegister          *PreRegisterHook
+	PostRegister         *PostRegisterHook
 	PostDeregister       *PostDeregisterHook
 }
 
@@ -170,6 +180,14 @@ func registerTarget(ctx context.Context, app *App, registratorService *Registrat
 	if err != nil {
 		logger.Log("error", err)
 	}
+
+	if app.PostRegister.Command != "" {
+		postRegCtx, postRegCancelFn := context.WithTimeout(ctx, app.PostRegister.Timeout)
+		defer postRegCancelFn()
+		logger.Log("msg", "Executing post-register command", "command", app.PostRegister.Command)
+		ExecCommand(postRegCtx, logger, app.PostRegister.Command)
+	}
+
 }
 
 func deregisterTarget(ctx context.Context, app *App, registratorService *RegistratorService, logger log.Logger) {
