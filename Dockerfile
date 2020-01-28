@@ -28,7 +28,7 @@ RUN CGO_ENABLED=0 go build \
     -o /k8s-nlb-registrator-sidecar .
 
 # Final stage: the running container.
-FROM scratch AS final
+FROM alpine:3.4 AS final
 
 # Import the user and group files from the first stage.
 COPY --from=builder /user/group /user/passwd /etc/

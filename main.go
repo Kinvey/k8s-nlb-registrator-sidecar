@@ -193,10 +193,14 @@ func registerTarget(ctx context.Context, app *App, registratorService *Registrat
 func deregisterTarget(ctx context.Context, app *App, registratorService *RegistratorService, logger log.Logger) {
 	deregisterRetrier := retrier.New(retrier.ExponentialBackoff(3, 1*time.Second), nil)
 	err := deregisterRetrier.RunCtx(ctx, func(context.Context) error {
-		return registratorService.DeregisterTarget(ctx, &DeregisterTargetInput{
+		err := registratorService.DeregisterTarget(ctx, &DeregisterTargetInput{
 			ID:             aws.String(app.TargetID),
 			TargetGroupArn: aws.String(app.TargetGroupArn),
 		})
+		if err != nil {
+			level.Error(logger).Log("error", err)
+		}
+		return err
 	})
 
 	if err != nil {
