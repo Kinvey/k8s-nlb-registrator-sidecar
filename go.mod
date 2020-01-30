@@ -3,7 +3,7 @@ module k8s-nlb-registrator-sidecar
 go 1.12
 
 require (
-	github.com/aws/aws-sdk-go v1.20.20
+	github.com/aws/aws-sdk-go v1.28.9
 	github.com/eapache/go-resiliency v1.2.0
 	github.com/ghodss/yaml v1.0.0 // indirect
 	github.com/go-kit/kit v0.9.0
